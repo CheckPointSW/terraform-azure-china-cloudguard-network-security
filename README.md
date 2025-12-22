@@ -162,5 +162,5 @@ terraform plan
 ### Apply Deployment
 Apply the planned changes and deploy the resources:
 ```hcl
-terraform apply 
+terraform apply
 ```
