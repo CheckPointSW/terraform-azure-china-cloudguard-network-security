@@ -1,13 +1,35 @@
 //************** Basic config variables**************//
 variable "resource_group_name" {
-  description = "Azure Resource Group name to build into"
+  description = "Azure Resource Group name. Required when create_resource_group=true (sets the name of the new RG). Ignored when create_resource_group=false — the name is derived from resource_group_id, which is the authoritative reference."
   type        = string
+  default     = ""
+
+  validation {
+    condition     = !var.create_resource_group || var.resource_group_name != ""
+    error_message = "resource_group_name is required when create_resource_group=true."
+  }
+
+  validation {
+    condition     = var.resource_group_name == "" || (can(regex("^[A-Za-z0-9._()-]{1,90}$", var.resource_group_name)) && !endswith(var.resource_group_name, "."))
+    error_message = "Variable [resource_group_name] must be 1-90 characters, contain only alphanumerics, underscores, hyphens, periods and parentheses, and must not end with a period."
+  }
+}
+
+variable "create_resource_group" {
+  description = "Controls whether a new Azure Resource Group should be created or an existing one should be used. Set to false to use a pre-existing resource group; resource_group_id must be provided."
+  type        = bool
+  default     = true
 }
 
 variable "resource_group_id" {
-  description = "Azure Resource Group ID to use."
+  description = "Azure Resource Group ID. Required when create_resource_group=false (both for pre-existing RG and same-apply deployments). When provided, resource_group_name can be omitted."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.create_resource_group || var.resource_group_id != ""
+    error_message = "resource_group_id is required when create_resource_group=false."
+  }
 }
 
 variable "location" {
@@ -48,8 +70,15 @@ variable "admin_username" {
 }
 
 variable "admin_password" {
-  description = "Administrator password of deployed Virtual Machine. The password must meet the complexity requirements of Azure"
+  description = "(Optional) Administrator password of the deployed VM. Required when authentication_type is 'Password'."
   type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.authentication_type == "SSH Public Key" || var.admin_password != ""
+    error_message = "admin_password is required when authentication_type is 'Password'."
+  }
 }
 
 variable "admin_shell" {
@@ -69,13 +98,17 @@ variable "admin_shell" {
 }
 
 variable "serial_console_password_hash" {
-  description = "Optional parameter, used to enable serial console connection in case of SSH key as authentication type"
+  description = "(Optional) Password hash for serial console connection. Relevant when using SSH Public Key authentication."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "maintenance_mode_password_hash" {
-  description = "Maintenance mode password hash, relevant only for R81.20 and higher versions"
+  description = "(Optional) Maintenance mode password hash, relevant only for R81.20 and higher versions."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "vm_instance_identity_type" {
@@ -109,9 +142,10 @@ variable "os_version" {
       "R8110",
       "R8120",
       "R82",
-      "R8210"
+      "R8210",
+      "R8220"
     ], var.os_version)
-    error_message = "Variable [os_version] must be one of the following: 'R8110', 'R8120', 'R82', 'R8210'."
+    error_message = "Variable [os_version] must be one of the following: 'R8110', 'R8120', 'R82', 'R8210', 'R8220'."
   }
 }
 
@@ -196,8 +230,9 @@ variable "vm_os_offer" {
       "check-point-cg-r8120",
       "check-point-cg-r82",
       "check-point-cg-r8210",
+      "check-point-cg-r8220"
     ], var.vm_os_offer)
-    error_message = "Variable [vm_os_offer] must be one of the following: 'check-point-cg-r8110', 'check-point-cg-r8120', 'check-point-cg-r82', 'check-point-cg-r8210'."
+    error_message = "Variable [vm_os_offer] must be one of the following: 'check-point-cg-r8110', 'check-point-cg-r8120', 'check-point-cg-r82', 'check-point-cg-r8210', 'check-point-cg-r8220'."
   }
 }
 
@@ -206,14 +241,19 @@ variable "vm_os_sku" {
   type        = string
 
   validation {
+    # The '-gen2' SKUs are the value composed internally when hyper_v_generation = "V2";
+    # users pass the base SKU, so they are intentionally omitted from the error message.
     condition = contains([
       "sg-byol",
-      "sg-ngtp",
-      "sg-ngtx",
+      "sg-byol-gen2",
       "mgmt-byol",
-      "mgmt-25"
+      "mgmt-byol-gen2",
+      "mgmt-byol-blink",
+      "mgmt-byol-blink-gen2",
+      "mds-byol-blink",
+      "mds-byol-blink-gen2"
     ], var.vm_os_sku)
-    error_message = "Variable [vm_os_sku] must be one of the following: 'sg-byol', 'sg-ngtp', 'sg-ngtx', 'mgmt-byol', 'mgmt-25'."
+    error_message = "Variable [vm_os_sku] must be one of the following: 'sg-byol', 'mgmt-byol', 'mgmt-byol-blink', 'mds-byol-blink'."
   }
 }
 
@@ -226,10 +266,22 @@ variable "vm_os_version" {
 variable "disk_size" {
   description = "Storage data disk size size(GB). Select a number between 100 and 3995"
   type        = string
+  default     = "200"
 
   validation {
     condition     = can(tonumber(var.disk_size)) && tonumber(var.disk_size) >= 100 && tonumber(var.disk_size) <= 3995
     error_message = "Variable [disk_size] must be a number between 100 and 3995."
+  }
+}
+
+variable "os_disk_type" {
+  description = "Type of the VM OS managed disk. Premium_LRS = Premium SSD, StandardSSD_LRS = Standard SSD. When null, defaults to Standard SSD (StandardSSD_LRS)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.os_disk_type == null || contains(["Premium_LRS", "StandardSSD_LRS", "Standard_LRS"], var.os_disk_type)
+    error_message = "Variable [os_disk_type] must be one of 'Premium_LRS', 'StandardSSD_LRS'."
   }
 }
 
@@ -243,20 +295,6 @@ variable "storage_os_disk_create_option" {
 variable "storage_os_disk_caching" {
   description = "Specifies the caching requirements for the OS Disk"
   default     = "ReadWrite"
-}
-
-variable "managed_disk_type" {
-  description = "Specifies the type of managed disk to create. Possible values are either Standard_LRS, StandardSSD_LRS, Premium_LRS"
-  type        = string
-  default     = "Standard_LRS"
-
-  validation {
-    condition = contains([
-      "Standard_LRS",
-      "Premium_LRS"
-    ], var.managed_disk_type)
-    error_message = "Variable [managed_disk_type] must be one of the following: 'Standard_LRS', 'Premium_LRS'."
-  }
 }
 
 variable "authentication_type" {

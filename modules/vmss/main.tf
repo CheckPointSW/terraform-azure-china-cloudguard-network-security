@@ -2,6 +2,8 @@
 module "common" {
   source                         = "../common/common"
   resource_group_name            = var.resource_group_name
+  create_resource_group          = var.create_resource_group
+  resource_group_id              = var.resource_group_id
   location                       = var.location
   is_zonal                       = var.availability_zones_num != "0"
   availability_zones_num         = var.availability_zones_num
@@ -14,9 +16,10 @@ module "common" {
   allow_upload_download          = var.allow_upload_download
   vm_size                        = var.vm_size
   disk_size                      = var.disk_size
+  os_disk_type                   = var.os_disk_type
   is_blink                       = var.is_blink
   os_version                     = var.os_version
-  vm_os_sku                      = var.vm_os_sku
+  vm_os_sku                      = "${var.vm_os_sku}${var.hyper_v_generation == "V2" ? "-gen2" : ""}"
   vm_os_offer                    = var.vm_os_offer
   authentication_type            = var.authentication_type
   serial_console_password_hash   = var.serial_console_password_hash
@@ -27,6 +30,7 @@ module "common" {
 //********************** Network Security Group **************************//
 module "network_security_group" {
   source              = "../common/network-security-group"
+  enable_nsg          = var.enable_nsg
   nsg_id              = var.nsg_id
   resource_group_name = module.common.resource_group_name
   security_group_name = "${module.common.resource_group_name}-nsg"
@@ -53,6 +57,7 @@ module "vnet" {
   ipv6_address_space           = var.vnet_ipv6_address_space
   subnet_ipv6_prefixes         = var.subnet_ipv6_prefixes
   nsg_id                       = module.network_security_group.id
+  enable_nsg                   = var.enable_nsg
   tags                         = var.tags
 }
 
@@ -65,7 +70,7 @@ resource "random_id" "random_id" {
 }
 
 resource "azurerm_public_ip_prefix" "public_ip_prefix" {
-  count               = var.use_public_ip_prefix && var.create_public_ip_prefix ? 1 : 0
+  count               = local.create_frontend_lb && var.use_public_ip_prefix && var.create_public_ip_prefix ? 1 : 0
   name                = "${module.common.resource_group_name}-ipprefix"
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
@@ -74,7 +79,7 @@ resource "azurerm_public_ip_prefix" "public_ip_prefix" {
 }
 
 resource "azurerm_public_ip" "public_ip_lb" {
-  count               = var.deployment_mode != "Internal" ? 1 : 0
+  count               = local.create_frontend_lb ? 1 : 0
   name                = "${var.vmss_name}-app-1"
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
@@ -86,7 +91,7 @@ resource "azurerm_public_ip" "public_ip_lb" {
 }
 
 resource "azurerm_public_ip" "public_ip_lb_v6" {
-  count               = var.enable_ipv6 && var.deployment_mode != "Internal" ? 1 : 0
+  count               = var.enable_ipv6 && local.create_frontend_lb ? 1 : 0
   name                = "${var.vmss_name}-app-1-v6"
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
@@ -102,7 +107,7 @@ resource "azurerm_lb" "frontend_lb" {
     azurerm_public_ip.public_ip_lb,
     azurerm_public_ip.public_ip_lb_v6
   ]
-  count               = var.deployment_mode != "Internal" ? 1 : 0
+  count               = local.create_frontend_lb ? 1 : 0
   name                = "frontend-lb"
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
@@ -125,19 +130,19 @@ resource "azurerm_lb" "frontend_lb" {
 }
 
 resource "azurerm_lb_backend_address_pool" "frontend_lb_pool" {
-  count           = var.deployment_mode != "Internal" ? 1 : 0
+  count           = local.create_frontend_lb ? 1 : 0
   loadbalancer_id = azurerm_lb.frontend_lb[0].id
   name            = "${var.vmss_name}-app-1"
 }
 
 resource "azurerm_lb_backend_address_pool" "frontend_lb_pool_v6" {
-  count           = var.enable_ipv6 && var.deployment_mode != "Internal" ? 1 : 0
+  count           = var.enable_ipv6 && local.create_frontend_lb ? 1 : 0
   loadbalancer_id = azurerm_lb.frontend_lb[0].id
   name            = "${var.vmss_name}-app-1-v6"
 }
 
 resource "azurerm_lb" "backend_lb" {
-  count               = var.deployment_mode != "External" ? 1 : 0
+  count               = local.create_backend_lb ? 1 : 0
   name                = "backend-lb"
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
@@ -164,13 +169,13 @@ resource "azurerm_lb" "backend_lb" {
 }
 
 resource "azurerm_lb_backend_address_pool" "backend_lb_pool" {
-  count           = var.deployment_mode != "External" ? 1 : 0
+  count           = local.create_backend_lb ? 1 : 0
   name            = "backend-lb-pool"
   loadbalancer_id = azurerm_lb.backend_lb[0].id
 }
 
 resource "azurerm_lb_backend_address_pool" "backend_lb_pool_v6" {
-  count           = var.enable_ipv6 && var.deployment_mode != "External" ? 1 : 0
+  count           = var.enable_ipv6 && local.create_backend_lb ? 1 : 0
   name            = "backend-lb-pool-v6"
   loadbalancer_id = azurerm_lb.backend_lb[0].id
 }
@@ -179,7 +184,7 @@ resource "azurerm_lb_probe" "azure_lb_healprob" {
   depends_on = [
     azurerm_lb.frontend_lb, azurerm_lb.backend_lb
   ]
-  count               = var.deployment_mode == "Standard" ? 2 : 1
+  count               = var.deployment_mode == "Standard" ? 2 : (var.deployment_mode == "None" ? 0 : 1)
   loadbalancer_id     = var.deployment_mode == "Standard" ? (count.index == 0 ? azurerm_lb.frontend_lb[0].id : azurerm_lb.backend_lb[0].id) : (var.deployment_mode == "External" ? azurerm_lb.frontend_lb[0].id : azurerm_lb.backend_lb[0].id)
   name                = var.deployment_mode == "Standard" ? (count.index == 0 ? "${var.vmss_name}-app-1" : "backend-lb") : (var.deployment_mode == "External" ? "${var.vmss_name}-app-1" : "backend-lb")
   protocol            = var.lb_probe_protocol
@@ -189,7 +194,7 @@ resource "azurerm_lb_probe" "azure_lb_healprob" {
 }
 
 resource "azurerm_lb_probe" "azure_lb_healprob_v6_external" {
-  count               = var.enable_ipv6 && var.deployment_mode != "Internal" ? 1 : 0
+  count               = var.enable_ipv6 && local.create_frontend_lb ? 1 : 0
   loadbalancer_id     = azurerm_lb.frontend_lb[0].id
   name                = "${var.vmss_name}-app-1-v6"
   protocol            = "Tcp"
@@ -199,7 +204,7 @@ resource "azurerm_lb_probe" "azure_lb_healprob_v6_external" {
 }
 
 resource "azurerm_lb_probe" "azure_lb_healprob_v6_internal" {
-  count               = var.enable_ipv6 && var.deployment_mode != "External" ? 1 : 0
+  count               = var.enable_ipv6 && local.create_backend_lb ? 1 : 0
   loadbalancer_id     = azurerm_lb.backend_lb[0].id
   name                = "backend-lb-v6"
   protocol            = "Tcp"
@@ -223,7 +228,7 @@ resource "azurerm_lb_rule" "lbnatrule_standard" {
   frontend_ip_configuration_name = count.index == 0 ? azurerm_lb.frontend_lb[0].frontend_ip_configuration[0].name : azurerm_lb.backend_lb[0].frontend_ip_configuration[0].name
   probe_id                       = azurerm_lb_probe.azure_lb_healprob[count.index].id
   load_distribution              = count.index == 0 ? var.frontend_load_distribution : var.backend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
 }
 
 resource "azurerm_lb_rule" "lbnatrule_standard_v6" {
@@ -240,7 +245,7 @@ resource "azurerm_lb_rule" "lbnatrule_standard_v6" {
   frontend_ip_configuration_name = count.index == 0 ? azurerm_lb.frontend_lb[0].frontend_ip_configuration[1].name : azurerm_lb.backend_lb[0].frontend_ip_configuration[1].name
   probe_id                       = count.index == 0 ? azurerm_lb_probe.azure_lb_healprob_v6_external[0].id : azurerm_lb_probe.azure_lb_healprob_v6_internal[0].id
   load_distribution              = count.index == 0 ? var.frontend_load_distribution : var.backend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
   disable_outbound_snat          = true
 }
 
@@ -259,7 +264,7 @@ resource "azurerm_lb_rule" "lbnatrule_external" {
   frontend_ip_configuration_name = azurerm_lb.frontend_lb[0].frontend_ip_configuration[0].name
   probe_id                       = azurerm_lb_probe.azure_lb_healprob[0].id
   load_distribution              = var.frontend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
 }
 
 resource "azurerm_lb_rule" "lbnatrule_external_v6" {
@@ -276,12 +281,12 @@ resource "azurerm_lb_rule" "lbnatrule_external_v6" {
   frontend_ip_configuration_name = azurerm_lb.frontend_lb[0].frontend_ip_configuration[1].name
   probe_id                       = azurerm_lb_probe.azure_lb_healprob_v6_external[0].id
   load_distribution              = var.frontend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
   disable_outbound_snat          = true
 }
 
 resource "azurerm_lb_outbound_rule" "outbound_rule_v6" {
-  count                    = var.enable_ipv6 && var.deployment_mode != "Internal" ? 1 : 0
+  count                    = var.enable_ipv6 && local.create_frontend_lb ? 1 : 0
   name                     = "egress-v6"
   loadbalancer_id          = azurerm_lb.frontend_lb[0].id
   protocol                 = "All"
@@ -308,7 +313,7 @@ resource "azurerm_lb_rule" "lbnatrule_internal" {
   frontend_ip_configuration_name = azurerm_lb.backend_lb[0].frontend_ip_configuration[0].name
   probe_id                       = azurerm_lb_probe.azure_lb_healprob[0].id
   load_distribution              = var.backend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
 }
 
 resource "azurerm_lb_rule" "lbnatrule_internal_v6" {
@@ -325,7 +330,7 @@ resource "azurerm_lb_rule" "lbnatrule_internal_v6" {
   frontend_ip_configuration_name = azurerm_lb.backend_lb[0].frontend_ip_configuration[1].name
   probe_id                       = azurerm_lb_probe.azure_lb_healprob_v6_internal[0].id
   load_distribution              = var.backend_load_distribution
-  enable_floating_ip             = var.enable_floating_ip
+  floating_ip_enabled            = var.enable_floating_ip
   disable_outbound_snat          = true
 }
 
@@ -346,12 +351,21 @@ module "vm_boot_diagnostics_storage" {
 module "custom_image" {
   source               = "../common/custom-image"
   source_image_vhd_uri = var.source_image_vhd_uri
+  hyper_v_generation   = var.hyper_v_generation
   resource_group_name  = module.common.resource_group_name
   location             = module.common.resource_group_location
+  storage_type         = module.common.os_disk_type
   tags                 = merge(lookup(var.tags, "custom-image", {}), lookup(var.tags, "all", {}))
 }
 
+// Keep existing Uniform state when the count index is introduced.
+moved {
+  from = azurerm_linux_virtual_machine_scale_set.vmss
+  to   = azurerm_linux_virtual_machine_scale_set.vmss[0]
+}
+
 resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
+  count = local.is_flexible ? 0 : 1
   depends_on = [
     azurerm_lb_backend_address_pool.frontend_lb_pool_v6,
     azurerm_lb_backend_address_pool.backend_lb_pool_v6
@@ -362,14 +376,17 @@ resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
   sku                 = module.common.vm_size
   instances           = local.number_of_vm_instances
   overprovision       = false
-  zones = var.availability_zones_num == "0" ? null : (
-    length(var.availability_zones) == 0 ? [for i in range(1, tonumber(var.availability_zones_num) + 1) : tostring(i)] : var.availability_zones
-  )
+  zones               = local.vmss_zones
 
   dynamic "identity" {
-    for_each = var.enable_custom_metrics ? [1] : []
+    for_each = (var.enable_custom_metrics || length(var.user_assigned_identity_ids) > 0) ? [1] : []
     content {
-      type = "SystemAssigned"
+      type = (
+        var.enable_custom_metrics && length(var.user_assigned_identity_ids) > 0 ? "SystemAssigned, UserAssigned" :
+        var.enable_custom_metrics ? "SystemAssigned" :
+        "UserAssigned"
+      )
+      identity_ids = length(var.user_assigned_identity_ids) > 0 ? var.user_assigned_identity_ids : null
     }
   }
 
@@ -388,7 +405,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
   os_disk {
     disk_size_gb         = module.common.disk_size
     caching              = module.common.storage_os_disk_caching
-    storage_account_type = module.vm_boot_diagnostics_storage.storage_account_type
+    storage_account_type = module.common.os_disk_type
   }
 
   dynamic "plan" {
@@ -403,23 +420,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
   computer_name_prefix = lower(var.vmss_name)
   admin_username       = module.common.admin_username
   admin_password       = module.common.admin_password
-  custom_data = base64encode(templatefile("${path.module}/cloud-init.sh", {
-    installation_type              = module.common.installation_type
-    allow_upload_download          = module.common.allow_upload_download
-    os_version                     = module.common.os_version
-      template_name                  = local.template_name
-    module_version                 = module.common.module_version
-    template_type                  = "terraform"
-    is_blink                       = module.common.is_blink
-    bootstrap_script64             = base64encode(var.bootstrap_script)
-    location                       = module.common.resource_group_location
-    sic_key                        = var.sic_key
-    vnet                           = module.vnet.subnet_prefixes[0]
-    enable_custom_metrics          = var.enable_custom_metrics ? "yes" : "no"
-    admin_shell                    = var.admin_shell
-    serial_console_password_hash   = var.serial_console_password_hash
-    maintenance_mode_password_hash = var.maintenance_mode_password_hash
-  }))
+  custom_data          = local.vmss_custom_data
 
   disable_password_authentication = module.common.SSH_authentication_type_condition
 
@@ -443,26 +444,31 @@ resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
     primary                       = true
     enable_ip_forwarding          = true
     enable_accelerated_networking = true
-    network_security_group_id     = module.network_security_group.id
     ip_configuration {
-      name                                   = "ipconfig1"
-      subnet_id                              = module.vnet.subnets[0]
-      load_balancer_backend_address_pool_ids = var.deployment_mode != "Internal" ? [azurerm_lb_backend_address_pool.frontend_lb_pool[0].id] : null
-      primary                                = true
-      public_ip_address {
-        name                    = "${var.vmss_name}-public-ip"
-        idle_timeout_in_minutes = 15
-        domain_name_label       = "${lower(var.vmss_name)}-dns-name"
+      name      = "ipconfig1"
+      subnet_id = module.vnet.subnets[0]
+      load_balancer_backend_address_pool_ids = local.create_frontend_lb ? [azurerm_lb_backend_address_pool.frontend_lb_pool[0].id] : (
+        length(var.frontend_lb_pool_ids) > 0 ? var.frontend_lb_pool_ids : null
+      )
+      primary = true
+      dynamic "public_ip_address" {
+        for_each = var.instance_level_public_ipv4 ? [1] : []
+        content {
+          name                    = "${var.vmss_name}-public-ip"
+          idle_timeout_in_minutes = 15
+        }
       }
     }
     dynamic "ip_configuration" {
       for_each = var.enable_ipv6 ? [1] : []
       content {
-        name                                   = "ipconfig1-v6"
-        subnet_id                              = module.vnet.subnets[0]
-        load_balancer_backend_address_pool_ids = var.deployment_mode != "Internal" ? [azurerm_lb_backend_address_pool.frontend_lb_pool_v6[0].id] : null
-        primary                                = false
-        version                                = "IPv6"
+        name      = "ipconfig1-v6"
+        subnet_id = module.vnet.subnets[0]
+        load_balancer_backend_address_pool_ids = local.create_frontend_lb ? [azurerm_lb_backend_address_pool.frontend_lb_pool_v6[0].id] : (
+          length(var.frontend_lb_pool_v6_ids) > 0 ? var.frontend_lb_pool_v6_ids : null
+        )
+        primary = false
+        version = "IPv6"
       }
     }
   }
@@ -473,32 +479,36 @@ resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
     enable_ip_forwarding          = true
     enable_accelerated_networking = true
     ip_configuration {
-      name                                   = "ipconfig2"
-      subnet_id                              = module.vnet.subnets[1]
-      load_balancer_backend_address_pool_ids = var.deployment_mode != "External" ? [azurerm_lb_backend_address_pool.backend_lb_pool[0].id] : null
-      primary                                = true
+      name      = "ipconfig2"
+      subnet_id = module.vnet.subnets[1]
+      load_balancer_backend_address_pool_ids = local.create_backend_lb ? [azurerm_lb_backend_address_pool.backend_lb_pool[0].id] : (
+        length(var.backend_lb_pool_ids) > 0 ? var.backend_lb_pool_ids : null
+      )
+      primary = true
     }
     dynamic "ip_configuration" {
       for_each = var.enable_ipv6 ? [1] : []
       content {
-        name                                   = "ipconfig2-v6"
-        subnet_id                              = module.vnet.subnets[1]
-        load_balancer_backend_address_pool_ids = var.deployment_mode != "External" ? [azurerm_lb_backend_address_pool.backend_lb_pool_v6[0].id] : null
-        primary                                = false
-        version                                = "IPv6"
+        name      = "ipconfig2-v6"
+        subnet_id = module.vnet.subnets[1]
+        load_balancer_backend_address_pool_ids = local.create_backend_lb ? [azurerm_lb_backend_address_pool.backend_lb_pool_v6[0].id] : (
+          length(var.backend_lb_pool_v6_ids) > 0 ? var.backend_lb_pool_v6_ids : null
+        )
+        primary = false
+        version = "IPv6"
       }
     }
   }
 
-  tags = merge(lookup(var.tags, "virtual-machine-scale-set", {}), lookup(var.tags, "all", {}), local.vmss_tags)
+  tags = merge(lookup(var.tags, "virtual-machine-scale-set", {}), lookup(var.tags, "all", {}), local.vmss_tags, { LegacyVMNVA = "" })
 }
 
 resource "azurerm_monitor_autoscale_setting" "vmss_settings" {
-  depends_on          = [azurerm_linux_virtual_machine_scale_set.vmss]
+  depends_on          = [azurerm_linux_virtual_machine_scale_set.vmss, azurerm_orchestrated_virtual_machine_scale_set.vmss_flex]
   name                = var.vmss_name
   resource_group_name = module.common.resource_group_name
   location            = module.common.resource_group_location
-  target_resource_id  = azurerm_linux_virtual_machine_scale_set.vmss.id
+  target_resource_id  = local.vmss_id
 
   profile {
     name = "Profile1"
@@ -512,7 +522,7 @@ resource "azurerm_monitor_autoscale_setting" "vmss_settings" {
     rule {
       metric_trigger {
         metric_name        = "Percentage CPU"
-        metric_resource_id = azurerm_linux_virtual_machine_scale_set.vmss.id
+        metric_resource_id = local.vmss_id
         time_grain         = "PT1M"
         statistic          = "Average"
         time_window        = "PT5M"
@@ -532,7 +542,7 @@ resource "azurerm_monitor_autoscale_setting" "vmss_settings" {
     rule {
       metric_trigger {
         metric_name        = "Percentage CPU"
-        metric_resource_id = azurerm_linux_virtual_machine_scale_set.vmss.id
+        metric_resource_id = local.vmss_id
         time_grain         = "PT1M"
         statistic          = "Average"
         time_window        = "PT5M"
@@ -563,9 +573,9 @@ resource "azurerm_monitor_autoscale_setting" "vmss_settings" {
 
 resource "azurerm_role_assignment" "custom_metrics_role_assignment" {
   depends_on         = [azurerm_linux_virtual_machine_scale_set.vmss]
-  count              = var.enable_custom_metrics ? 1 : 0
+  count              = var.enable_custom_metrics && !local.is_flexible ? 1 : 0
   role_definition_id = join("", ["/subscriptions/", var.subscription_id, "/providers/Microsoft.Authorization/roleDefinitions/", "3913510d-42f4-4e42-8a64-420c390055eb"])
-  principal_id       = lookup(azurerm_linux_virtual_machine_scale_set.vmss.identity[0], "principal_id")
+  principal_id       = local.vmss_principal_id
   scope              = module.common.resource_group_id
 
   lifecycle {

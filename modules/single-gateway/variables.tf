@@ -1,22 +1,25 @@
 //********************** Basic Configuration Variables **************************//
 variable "subscription_id" {
   description = "Subscription ID"
-  type = string
+  type        = string
 }
 
 variable "tenant_id" {
   description = "Tenant ID"
-  type = string
+  type        = string
 }
 
 variable "client_id" {
-  description = "Application ID(Client ID)"
-  type = string
+  description = "Application ID(Client ID). Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
+  type        = string
+  default     = null
 }
 
 variable "client_secret" {
-  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password."
-  type = string
+  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password. Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
+  type        = string
+  sensitive   = true
+  default     = null
 }
 
 variable "resource_group_name" {
@@ -27,12 +30,18 @@ variable "resource_group_name" {
 variable "single_gateway_name" {
   description = "Single Gateway name."
   type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", var.single_gateway_name))
+    error_message = "Variable [single_gateway_name] must be 1-64 characters, contain only alphanumerics and hyphens, and must not start or end with a hyphen."
+  }
 }
 
 variable "location" {
   description = "The location/region where resource will be created. The full list of Azure regions can be found at https://azure.microsoft.com/regions."
   type        = string
 }
+
 
 variable "tags" {
   description = "Assign tags by resource."
@@ -47,6 +56,20 @@ variable "source_image_vhd_uri" {
   default     = "noCustomUri"
 }
 
+variable "hyper_v_generation" {
+  description = "The Hyper-V generation of the virtual machine. Set to 'V2' to deploy a Generation 2 VM, or 'V1' for Generation 1. 'V2' is supported on Gaia version R82.10 or later."
+  type        = string
+  default     = "V1"
+  validation {
+    condition     = contains(["V1", "V2"], var.hyper_v_generation)
+    error_message = "Variable [hyper_v_generation] must be one of 'V1', 'V2'."
+  }
+  validation {
+    condition     = var.hyper_v_generation != "V2" || var.source_image_vhd_uri != "noCustomUri" || !contains(["R8110", "R8120", "R82"], var.os_version)
+    error_message = "hyper_v_generation can be set to 'V2' only for a custom image, or for a marketplace image on Gaia version R82.10 or later."
+  }
+}
+
 variable "admin_username" {
   description = "Administrator username of deployed VM. Due to Azure limitations 'notused' name can be used."
   type        = string
@@ -59,8 +82,15 @@ variable "authentication_type" {
 }
 
 variable "admin_password" {
-  description = "Administrator password of deployed Virtual Machine. The password must meet the complexity requirements of Azure."
+  description = "(Optional) Administrator password of the deployed VM. Required when authentication_type is 'Password'."
   type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.authentication_type == "SSH Public Key" || var.admin_password != ""
+    error_message = "admin_password is required when authentication_type is 'Password'."
+  }
 }
 
 variable "admin_SSH_key" {
@@ -72,6 +102,7 @@ variable "admin_SSH_key" {
 variable "sic_key" {
   description = "Secure Internal Communication (SIC) key."
   type        = string
+  sensitive   = true
 
   validation {
     condition     = length(var.sic_key) >= 12
@@ -80,13 +111,17 @@ variable "sic_key" {
 }
 
 variable "serial_console_password_hash" {
-  description = "Optional parameter, used to enable serial console connection in case of SSH key as authentication type."
+  description = "(Optional) Password hash for serial console connection. Relevant when using SSH Public Key authentication."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "maintenance_mode_password_hash" {
-  description = "Maintenance mode password hash, relevant only for R81.20 and higher versions."
+  description = "(Optional) Maintenance mode password hash, relevant only for R81.20 and higher versions."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "installation_type" {
@@ -111,6 +146,12 @@ variable "vm_size" {
 variable "disk_size" {
   description = "Storage data disk size size(GB). Select a number between 100 and 3995."
   type        = string
+  default     = "200"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.disk_size)) && tonumber(var.disk_size) >= 100 && tonumber(var.disk_size) <= 3995
+    error_message = "Variable [disk_size] must be a whole number in the range 100 - 3995 (GB)."
+  }
 }
 
 variable "os_version" {
@@ -161,22 +202,18 @@ variable "zone" {
   description = "The availability zone to use for the Virtual Machine. Changing this forces a new resource to be created."
   type        = string
   default     = ""
-}
 
-//********************** Smart-1 Cloud Variables **************************//
-variable "smart_1_cloud_token" {
-  description = "Smart-1 Cloud Token."
-  type        = string
 }
 
 //********************** Management Variables **************************//
 variable "management_GUI_client_network" {
-  description = "Allowed GUI clients - GUI clients network CIDR."
+  description = "Allowed GUI clients - GUI clients network CIDR. Use '0.0.0.0/0' to allow access from any IPv4 address."
   type        = string
+  default     = "0.0.0.0/0"
 
   validation {
-    condition     = can(regex("(^0\\.0\\.0\\.0\\/0$)|(^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/32)?$)", var.management_GUI_client_network)) && var.management_GUI_client_network != "0.0.0.0/32"
-    error_message = "Variable [management_GUI_client_network] must be a valid IPv4 network CIDR."
+    condition     = can(regex("^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(3[0-2]|2[0-9]|1[0-9]|[0-9]))$", var.management_GUI_client_network))
+    error_message = "Variable [management_GUI_client_network] must be a valid IPv4 network CIDR (e.g. '0.0.0.0/0' for any)."
   }
 }
 
@@ -205,13 +242,47 @@ variable "backend_subnet_name" {
 variable "address_space" {
   description = "The address space that is used by a Virtual Network."
   type        = string
-  default     = "10.12.0.0/16"
+  default     = "10.0.0.0/16"
 }
 
 variable "subnet_prefixes" {
   description = "Address prefix to be used for network subnets."
   type        = list(string)
   default     = ["10.0.0.0/24", "10.0.1.0/24"]
+}
+
+variable "frontend_private_ip_host" {
+  description = "Host number in frontend subnet for eth0 private IP."
+  type        = number
+  default     = 4
+}
+
+variable "frontend_private_ip" {
+  description = "Optional explicit private IPv4 address for eth0. If empty, the address is derived from frontend_private_ip_host and the frontend subnet prefix."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.frontend_private_ip == "" || can(cidrhost("${var.frontend_private_ip}/32", 0))
+    error_message = "Variable [frontend_private_ip] must be empty or a valid IPv4 address."
+  }
+}
+
+variable "backend_private_ip_host" {
+  description = "Host number in backend subnet for eth1 private IP."
+  type        = number
+  default     = 4
+}
+
+variable "backend_private_ip" {
+  description = "Optional explicit private IPv4 address for eth1. If empty, the address is derived from backend_private_ip_host and the backend subnet prefix."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.backend_private_ip == "" || can(cidrhost("${var.backend_private_ip}/32", 0))
+    error_message = "Variable [backend_private_ip] must be empty or a valid IPv4 address."
+  }
 }
 
 variable "enable_ipv6" {
@@ -242,6 +313,18 @@ variable "storage_account_deployment_mode" {
   description = "The deployment mode for the storage account. Options are 'New', 'Existing', 'Managed' and 'None'. If 'Existing', the storage account must be specified in the variable 'existing_storage_account_id'."
   type        = string
   default     = "New"
+}
+
+variable "os_disk_type" {
+  description = "Type of the VM OS managed disk. Premium_LRS = Premium SSD, StandardSSD_LRS = Standard SSD."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.os_disk_type == null || contains(["Premium_LRS", "StandardSSD_LRS", "Standard_LRS"], var.os_disk_type)
+    error_message = "Variable [os_disk_type] must be one of 'Premium_LRS', 'StandardSSD_LRS'."
+  }
+
 }
 
 variable "add_storage_account_ip_rules" {

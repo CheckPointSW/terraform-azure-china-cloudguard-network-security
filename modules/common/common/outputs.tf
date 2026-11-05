@@ -1,17 +1,17 @@
 output "resource_group_name" {
-  value = azurerm_resource_group.resource_group.name
+  value = local.resource_group_name
 }
 
 output "resource_group_id" {
-  value = azurerm_resource_group.resource_group.id
+  value = local.resource_group_id
 }
 
 output "resource_group_location" {
-  value = azurerm_resource_group.resource_group.location
+  value = local.resource_group_location
 }
 
 output "azurerm_resource_group_id" {
-  value = azurerm_resource_group.resource_group.id
+  value = local.resource_group_id
 }
 
 output "admin_username" {
@@ -19,7 +19,8 @@ output "admin_username" {
 }
 
 output "admin_password" {
-  value = var.admin_password
+  value     = var.admin_password
+  sensitive = true
 }
 
 output "vm_instance_identity" {
@@ -82,6 +83,10 @@ output "disk_size" {
   value = var.disk_size
 }
 
+output "os_disk_type" {
+  value = local.os_disk_type
+}
+
 output "publisher" {
   value = var.publisher
 }
@@ -92,10 +97,6 @@ output "storage_os_disk_create_option" {
 
 output "storage_os_disk_caching" {
   value = var.storage_os_disk_caching
-}
-
-output "managed_disk_type" {
-  value = var.managed_disk_type
 }
 
 output "authentication_type" {

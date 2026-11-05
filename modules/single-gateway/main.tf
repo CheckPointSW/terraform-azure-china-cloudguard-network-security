@@ -14,6 +14,7 @@ module "common" {
   allow_upload_download          = var.allow_upload_download
   vm_size                        = var.vm_size
   disk_size                      = var.disk_size
+  os_disk_type                   = var.os_disk_type
   os_version                     = var.os_version
   vm_os_sku                      = local.vm_os_sku
   vm_os_offer                    = var.vm_os_offer
@@ -36,6 +37,11 @@ module "network_security_group" {
 }
 
 //********************** Networking **************************//
+locals {
+  edge_zone                       =  null
+  storage_account_deployment_mode = var.storage_account_deployment_mode
+}
+
 module "vnet" {
   depends_on = [
     module.network_security_group
@@ -53,6 +59,8 @@ module "vnet" {
   enable_ipv6                  = var.enable_ipv6
   ipv6_address_space           = var.vnet_ipv6_address_space
   subnet_ipv6_prefixes         = var.subnet_ipv6_prefixes
+  edge_zone                    = local.edge_zone
+  backend_next_hop_ip_host     = var.backend_private_ip_host
   tags                         = var.tags
 }
 
@@ -72,6 +80,7 @@ resource "azurerm_public_ip" "public_ip" {
   sku                     = var.sku
   idle_timeout_in_minutes = 30
   domain_name_label       = "${lower(var.single_gateway_name)}-${random_id.public_ip_suffix.hex}"
+  edge_zone               = local.edge_zone
   tags                    = merge(lookup(var.tags, "public-ip", {}), lookup(var.tags, "all", {}))
 }
 
@@ -85,6 +94,7 @@ resource "azurerm_public_ip" "public_ip_v6" {
   ip_version              = "IPv6"
   idle_timeout_in_minutes = 30
   domain_name_label       = "${lower(var.single_gateway_name)}-${random_id.public_ip_suffix.hex}"
+  edge_zone               = local.edge_zone
   tags                    = merge(lookup(var.tags, "public-ip", {}), lookup(var.tags, "all", {}))
 }
 
@@ -94,6 +104,7 @@ resource "azurerm_lb" "lb_v6" {
   location            = module.common.resource_group_location
   resource_group_name = module.common.resource_group_name
   sku                 = "Standard"
+  edge_zone           = local.edge_zone
 
   frontend_ip_configuration {
     name                 = "LB-v6"
@@ -110,11 +121,11 @@ resource "azurerm_lb_backend_address_pool" "backend_pool_v6" {
 }
 
 resource "azurerm_lb_probe" "lb_probe_v6" {
-  count           = var.enable_ipv6 ? 1 : 0
-  name            = "lb-probe"
-  loadbalancer_id = azurerm_lb.lb_v6[0].id
-  protocol        = "Tcp"
-  port            = 8117
+  count               = var.enable_ipv6 ? 1 : 0
+  name                = "lb-probe"
+  loadbalancer_id     = azurerm_lb.lb_v6[0].id
+  protocol            = "Tcp"
+  port                = 8117
   interval_in_seconds = 5
   number_of_probes    = 2
 }
@@ -129,18 +140,18 @@ resource "azurerm_lb_rule" "lb_rule_http_v6" {
   frontend_ip_configuration_name = "LB-v6"
   backend_address_pool_ids       = [azurerm_lb_backend_address_pool.backend_pool_v6[0].id]
   probe_id                       = azurerm_lb_probe.lb_probe_v6[0].id
-  enable_floating_ip             = true
-  enable_tcp_reset               = true
+  floating_ip_enabled            = true
+  tcp_reset_enabled              = true
   idle_timeout_in_minutes        = 15
   disable_outbound_snat          = true
 }
 
 resource "azurerm_lb_outbound_rule" "outbound_v6" {
-  count                   = var.enable_ipv6 ? 1 : 0
-  name                    = "ob-v6"
-  loadbalancer_id         = azurerm_lb.lb_v6[0].id
-  protocol                = "All"
-  backend_address_pool_id = azurerm_lb_backend_address_pool.backend_pool_v6[0].id
+  count                    = var.enable_ipv6 ? 1 : 0
+  name                     = "ob-v6"
+  loadbalancer_id          = azurerm_lb.lb_v6[0].id
+  protocol                 = "All"
+  backend_address_pool_id  = azurerm_lb_backend_address_pool.backend_pool_v6[0].id
   allocated_outbound_ports = 8192
   idle_timeout_in_minutes  = 4
 
@@ -163,18 +174,19 @@ resource "azurerm_network_interface" "nic" {
     azurerm_public_ip.public_ip,
     module.vnet
   ]
-  name                          = "${var.single_gateway_name}-eth0"
-  location                      = module.common.resource_group_location
-  resource_group_name           = module.common.resource_group_name
-  enable_ip_forwarding          = true
-  enable_accelerated_networking = true
+  name                           = "${var.single_gateway_name}-eth0"
+  location                       = module.common.resource_group_location
+  resource_group_name            = module.common.resource_group_name
+  ip_forwarding_enabled          = true
+  accelerated_networking_enabled = true
+  edge_zone                      = local.edge_zone
 
 
   ip_configuration {
     name                          = "ipconfig1"
     subnet_id                     = module.vnet.subnets[0]
     private_ip_address_allocation = module.vnet.allocation_method
-    private_ip_address            = cidrhost(module.vnet.subnet_prefixes[0], 4)
+    private_ip_address            = var.frontend_private_ip != "" ? var.frontend_private_ip : cidrhost(module.vnet.subnet_prefixes[0], var.frontend_private_ip_host)
     public_ip_address_id          = azurerm_public_ip.public_ip.id
     primary                       = true
   }
@@ -204,18 +216,19 @@ resource "azurerm_network_interface" "nic1" {
   depends_on = [
     module.vnet
   ]
-  name                          = "${var.single_gateway_name}-eth1"
-  location                      = module.common.resource_group_location
-  resource_group_name           = module.common.resource_group_name
-  enable_ip_forwarding          = true
-  enable_accelerated_networking = true
+  name                           = "${var.single_gateway_name}-eth1"
+  location                       = module.common.resource_group_location
+  resource_group_name            = module.common.resource_group_name
+  ip_forwarding_enabled          = true
+  accelerated_networking_enabled = true
+  edge_zone                      = local.edge_zone
 
 
   ip_configuration {
     name                          = "ipconfig2"
     subnet_id                     = module.vnet.subnets[1]
     private_ip_address_allocation = module.vnet.allocation_method
-    private_ip_address            = cidrhost(module.vnet.subnet_prefixes[1], 4)
+    private_ip_address            = var.backend_private_ip != "" ? var.backend_private_ip : cidrhost(module.vnet.subnet_prefixes[1], var.backend_private_ip_host)
     primary                       = true
   }
 
@@ -236,7 +249,7 @@ resource "azurerm_network_interface" "nic1" {
 //********************** Storage accounts **************************//
 module "vm_boot_diagnostics_storage" {
   source                                       = "../common/storage-account"
-  storage_account_deployment_mode              = var.storage_account_deployment_mode
+  storage_account_deployment_mode              = local.storage_account_deployment_mode
   existing_storage_account_name                = var.existing_storage_account_name
   existing_storage_account_resource_group_name = var.existing_storage_account_resource_group_name
   resource_group_name                          = module.common.resource_group_name
@@ -250,9 +263,16 @@ module "vm_boot_diagnostics_storage" {
 module "custom_image" {
   source               = "../common/custom-image"
   source_image_vhd_uri = var.source_image_vhd_uri
+  hyper_v_generation   = var.hyper_v_generation
   resource_group_name  = module.common.resource_group_name
   location             = module.common.resource_group_location
+  storage_type         = module.common.os_disk_type
   tags                 = merge(lookup(var.tags, "custom-image", {}), lookup(var.tags, "all", {}))
+}
+
+moved {
+  from = azurerm_virtual_machine.single_gateway_vm_instance
+  to   = azurerm_virtual_machine.single_gateway_vm_instance[0]
 }
 
 resource "azurerm_virtual_machine" "single_gateway_vm_instance" {
@@ -260,6 +280,7 @@ resource "azurerm_virtual_machine" "single_gateway_vm_instance" {
     azurerm_network_interface.nic,
     azurerm_network_interface.nic1
   ]
+  count                         = 1
   location                      = module.common.resource_group_location
   zones                         = var.zone == "" ? null : [var.zone]
   name                          = var.single_gateway_name
@@ -304,7 +325,6 @@ resource "azurerm_virtual_machine" "single_gateway_vm_instance" {
       admin_shell                    = var.admin_shell
       sic_key                        = var.sic_key
       management_GUI_client_network  = var.management_GUI_client_network
-      smart_1_cloud_token            = var.smart_1_cloud_token
       enable_custom_metrics          = var.enable_custom_metrics ? "yes" : "no"
       serial_console_password_hash   = var.serial_console_password_hash
       maintenance_mode_password_hash = var.maintenance_mode_password_hash
@@ -335,9 +355,9 @@ resource "azurerm_virtual_machine" "single_gateway_vm_instance" {
     name              = var.single_gateway_name
     create_option     = module.common.storage_os_disk_create_option
     caching           = module.common.storage_os_disk_caching
-    managed_disk_type = module.vm_boot_diagnostics_storage.storage_account_type
+    managed_disk_type = module.common.os_disk_type
     disk_size_gb      = module.common.disk_size
   }
 
-  tags = merge(lookup(var.tags, "virtual-machine", {}), lookup(var.tags, "all", {}))
+  tags = merge(lookup(var.tags, "virtual-machine", {}), lookup(var.tags, "all", {}), { LegacyVMNVA = "" })
 }
