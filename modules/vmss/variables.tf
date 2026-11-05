@@ -10,13 +10,16 @@ variable "tenant_id" {
 }
 
 variable "client_id" {
-  description = "Application ID(Client ID)"
+  description = "Application ID(Client ID). Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
   type        = string
+  default     = null
 }
 
 variable "client_secret" {
-  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password."
+  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password. Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
   type        = string
+  sensitive   = true
+  default     = null
 }
 
 variable "resource_group_name" {
@@ -24,9 +27,26 @@ variable "resource_group_name" {
   type        = string
 }
 
+variable "create_resource_group" {
+  description = "Controls whether a new Azure Resource Group should be created or an existing one should be used. Set to false to use a pre-existing resource group; resource_group_id must be provided."
+  type        = bool
+  default     = true
+}
+
+variable "resource_group_id" {
+  description = "Azure Resource Group ID. Required when create_resource_group=false (both for pre-existing RG and same-apply deployments)."
+  type        = string
+  default     = ""
+}
+
 variable "vmss_name" {
   description = "VMSS name."
   type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", var.vmss_name))
+    error_message = "Variable [vmss_name] must be 1-64 characters, contain only alphanumerics and hyphens, and must not start or end with a hyphen."
+  }
 }
 
 variable "location" {
@@ -47,8 +67,23 @@ variable "source_image_vhd_uri" {
   default     = "noCustomUri"
 }
 
+variable "hyper_v_generation" {
+  description = "The Hyper-V generation of the virtual machine. Set to 'V2' to deploy a Generation 2 VM, or 'V1' for Generation 1. 'V2' is supported on Gaia version R82.10 or later."
+  type        = string
+  default     = "V1"
+  validation {
+    condition     = contains(["V1", "V2"], var.hyper_v_generation)
+    error_message = "Variable [hyper_v_generation] must be one of 'V1', 'V2'."
+  }
+  validation {
+    condition     = var.hyper_v_generation != "V2" || var.source_image_vhd_uri != "noCustomUri" || !contains(["R8110", "R8120", "R82"], var.os_version)
+    error_message = "hyper_v_generation can be set to 'V2' only for a custom image, or for a marketplace image on Gaia version R82.10 or later."
+  }
+}
+
 variable "admin_username" {
   description = "Administrator username of deployed VM. Due to Azure limitations 'notused' name can be used."
+  type        = string
   default     = "notused"
 }
 
@@ -58,8 +93,15 @@ variable "authentication_type" {
 }
 
 variable "admin_password" {
-  description = "Administrator password of deployed Virtual Machine. The password must meet the complexity requirements of Azure"
+  description = "(Optional) Administrator password of the deployed VM. Required when authentication_type is 'Password'."
   type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.authentication_type == "SSH Public Key" || var.admin_password != ""
+    error_message = "admin_password is required when authentication_type is 'Password'."
+  }
 }
 
 variable "admin_SSH_key" {
@@ -71,6 +113,7 @@ variable "admin_SSH_key" {
 variable "sic_key" {
   description = "Secure Internal Communication (SIC) key."
   type        = string
+  sensitive   = true
 
   validation {
     condition     = length(var.sic_key) >= 12
@@ -79,15 +122,17 @@ variable "sic_key" {
 }
 
 variable "serial_console_password_hash" {
-  description = "Optional parameter, used to enable serial console connection in case of SSH key as authentication type."
+  description = "(Optional) Password hash for serial console connection. Relevant when using SSH Public Key authentication."
   type        = string
   default     = ""
+  sensitive   = true
 }
 
 variable "maintenance_mode_password_hash" {
-  description = "Maintenance mode password hash, relevant only for R81.20 and higher versions."
+  description = "(Optional) Maintenance mode password hash, relevant only for R81.20 and higher versions."
   type        = string
   default     = ""
+  sensitive   = true
 }
 
 variable "vm_size" {
@@ -96,13 +141,13 @@ variable "vm_size" {
 }
 
 variable "disk_size" {
-  description = "Storage data disk size size (GB). Select a number between 100 and 3995."
+  description = "OS disk size (GB). Select a number between 100 and 3995."
   type        = string
   default     = "100"
 
   validation {
-    condition     = tonumber(var.disk_size) != 100 && contains(["R8110", "R8120"], var.os_version) ? false : true
-    error_message = "Variable [disk_size] cannot be changed if the OS version is R81.20 or below."
+    condition     = can(regex("^[0-9]+$", var.disk_size)) && tonumber(var.disk_size) >= 100 && tonumber(var.disk_size) <= 3995
+    error_message = "Variable [disk_size] must be a whole number in the range 100 - 3995 (GB)."
   }
 }
 
@@ -135,13 +180,24 @@ variable "admin_shell" {
 variable "bootstrap_script" {
   description = "An optional script to run on the initial boot."
   type        = string
-  default     = "value"
+  default     = ""
+}
+
+variable "user_assigned_identity_ids" {
+  description = "User-assigned managed identity resource IDs to attach to the VMSS. When enable_custom_metrics is true, the VMSS gets a combined 'SystemAssigned, UserAssigned' identity. When enable_custom_metrics is false, only the user-assigned identities are attached."
+  type        = list(string)
+  default     = []
 }
 
 variable "availability_zones_num" {
   description = "The number of availability zones to use for Scale Set. Note that the load balancers and their IP addresses will be redundant in any case."
   type        = string
   default     = "0"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.availability_zones_num)) && tonumber(var.availability_zones_num) >= 0
+    error_message = "Variable [availability_zones_num] must be a whole number (e.g. \"0\", \"1\", \"2\", \"3\")."
+  }
 }
 
 variable "availability_zones" {
@@ -254,18 +310,46 @@ variable "ipv6_allocated_outbound_ports" {
   description = "Number of allocated outbound ports for IPv6 SNAT on the external load balancer."
   type        = number
   default     = 1024
+
+  validation {
+    condition     = var.ipv6_allocated_outbound_ports >= 1024 && var.ipv6_allocated_outbound_ports <= 64000
+    error_message = "Variable [ipv6_allocated_outbound_ports] must be in the range 1024 - 64000."
+  }
+}
+
+variable "enable_nsg" {
+  description = "Controls whether a Network Security Group is created (or used if nsg_id is provided). When true and a new VNet is created, the NSG is associated with the subnets. Set to false to skip NSG creation and association entirely."
+  type        = bool
+  default     = true
 }
 
 variable "nsg_id" {
-  description = "(Optional) The Network Security Group ID."
+  description = "(Optional) The ID of an existing Network Security Group to use instead of creating a new one."
   type        = string
   default     = ""
+}
+
+variable "instance_level_public_ipv4" {
+  description = "Assign a public IPv4 address to each VMSS instance on eth0. Set to false when instances should only be reachable through a load balancer or private connectivity."
+  type        = bool
+  default     = true
 }
 
 variable "storage_account_deployment_mode" {
   description = "The deployment mode for the storage account. Options are 'New', 'Existing', 'Managed' and 'None'. If 'Existing', the storage account must be specified in the variable 'existing_storage_account_id'."
   type        = string
   default     = "New"
+}
+
+variable "os_disk_type" {
+  description = "Type of the VM OS managed disk. Premium_LRS = Premium SSD, StandardSSD_LRS = Standard SSD."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.os_disk_type == null || contains(["Premium_LRS", "StandardSSD_LRS", "Standard_LRS"], var.os_disk_type)
+    error_message = "Variable [os_disk_type] must be one of 'Premium_LRS', 'StandardSSD_LRS'."
+  }
 }
 
 variable "add_storage_account_ip_rules" {
@@ -299,7 +383,7 @@ variable "sku" {
 }
 
 variable "security_rules" {
-  description = "Security rules for the Network Security Group using this format [name, priority, direction, access, protocol, source_source_port_rangesport_range, destination_port_ranges, source_address_prefix, destination_address_prefix, description]."
+  description = "Security rules for the Network Security Group using this format [name, priority, direction, access, protocol, source_port_ranges, destination_port_ranges, source_address_prefix, destination_address_prefix, description]."
   type        = list(any)
   default = [
     {
@@ -319,7 +403,7 @@ variable "security_rules" {
 
 //********************* Load Balancers Variables **********************//
 variable "deployment_mode" {
-  description = "The type of the deployment, can be 'Standard' for both load balancers or 'External' for external load balancer or 'Internal for internal load balancer."
+  description = "The type of the deployment. 'Standard' deploys both load balancers, 'External' deploys only the external load balancer, 'Internal' deploys only the internal load balancer, 'None' skips load balancer creation entirely (use when LBs are managed externally)."
   type        = string
   default     = "Standard"
 
@@ -327,15 +411,41 @@ variable "deployment_mode" {
     condition = contains([
       "Standard",
       "External",
-      "Internal"
+      "Internal",
+      "None"
     ], var.deployment_mode)
-    error_message = "Variable [deployment_mode] must be one of the following: 'Standard', 'External', 'Internal'."
+    error_message = "Variable [deployment_mode] must be one of the following: 'Standard', 'External', 'Internal', 'None'."
   }
 }
 
+variable "frontend_lb_pool_ids" {
+  description = "(Optional) List of externally managed frontend load balancer backend pool IDs to associate with the VMSS eth0 NIC. Used when deployment_mode is 'None'."
+  type        = list(string)
+  default     = []
+}
+
+variable "frontend_lb_pool_v6_ids" {
+  description = "(Optional) List of externally managed frontend load balancer backend pool IDs (IPv6) to associate with the VMSS eth0 NIC. Used when deployment_mode is 'None' and enable_ipv6 is true."
+  type        = list(string)
+  default     = []
+}
+
+variable "backend_lb_pool_ids" {
+  description = "(Optional) List of externally managed backend load balancer backend pool IDs to associate with the VMSS eth1 NIC. Used when deployment_mode is 'None'."
+  type        = list(string)
+  default     = []
+}
+
+variable "backend_lb_pool_v6_ids" {
+  description = "(Optional) List of externally managed backend load balancer backend pool IDs (IPv6) to associate with the VMSS eth1 NIC. Used when deployment_mode is 'None' and enable_ipv6 is true."
+  type        = list(string)
+  default     = []
+}
+
 variable "backend_lb_IP_address" {
-  description = "The IP address is defined by its position in the subnet."
+  description = "The IP address is defined by its position in the subnet. Not used when deployment_mode is 'None'."
   type        = number
+  default     = 4
 }
 
 variable "lb_probe_port" {
@@ -375,8 +485,9 @@ variable "backend_port" {
 }
 
 variable "frontend_load_distribution" {
-  description = "Specifies the load balancing distribution type to be used by the frontend load balancer."
+  description = "Specifies the load balancing distribution type to be used by the frontend load balancer. Not used when deployment_mode is 'None'."
   type        = string
+  default     = "Default"
 
   validation {
     condition = contains([
@@ -389,8 +500,9 @@ variable "frontend_load_distribution" {
 }
 
 variable "backend_load_distribution" {
-  description = "Specifies the load balancing distribution type to be used by the backend load balancer"
+  description = "Specifies the load balancing distribution type to be used by the backend load balancer. Not used when deployment_mode is 'None'."
   type        = string
+  default     = "Default"
 
   validation {
     condition = contains([
@@ -436,14 +548,66 @@ variable "number_of_vm_instances" {
 variable "minimum_number_of_vm_instances" {
   description = "Minimum number of VM instances to deploy."
   type        = string
+
+  validation {
+    condition     = tonumber(var.minimum_number_of_vm_instances) >= 0 && tonumber(var.minimum_number_of_vm_instances) <= 99
+    error_message = "Variable [minimum_number_of_vm_instances] must be in the range 0 - 99."
+  }
 }
 
 variable "maximum_number_of_vm_instances" {
   description = "Maximum number of VM instances to deploy."
   type        = string
+
+  validation {
+    condition     = tonumber(var.maximum_number_of_vm_instances) >= 0 && tonumber(var.maximum_number_of_vm_instances) <= 99
+    error_message = "Variable [maximum_number_of_vm_instances] must be in the range 0 - 99."
+  }
 }
 
 variable "notification_email" {
-  description = "Specifies a list of custom email addresses to which the email notifications will be sent."
+  description = "(Optional) A single email address to notify when an automatic scaling operation occurs. Leave empty to disable notifications."
   type        = string
+  default     = ""
+
+  validation {
+    condition     = var.notification_email == "" || can(regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", var.notification_email))
+    error_message = "Variable [notification_email] must be empty or a valid email address."
+  }
+}
+
+variable "set_static_health_probe" {
+  type    = bool
+  default = false
+}
+
+//********************** Orchestration (VMSS Flex) variables *******************//
+variable "orchestration_mode" {
+  description = "VMSS orchestration mode. 'Uniform' (default) deploys the classic scale set (azurerm_linux_virtual_machine_scale_set), where all members share one identical VM model. 'Flexible' deploys members as standard Azure VMs (azurerm_orchestrated_virtual_machine_scale_set), enabling per-instance effective routes and VTap packet mirroring. The orchestration mode is immutable and cannot be changed after deployment."
+  type        = string
+  default     = "Uniform"
+
+  validation {
+    condition = contains([
+      "Uniform",
+      "Flexible"
+    ], var.orchestration_mode)
+    error_message = "Variable [orchestration_mode] must be one of the following: 'Uniform', 'Flexible'."
+  }
+}
+
+variable "platform_fault_domain_count" {
+  description = "Number of fault domains the Flexible scale set spreads instances across. Flexible only; ignored in Uniform. Zonal deployments support 1 only; regional (no zones) supports 1, 2 or 3."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.platform_fault_domain_count >= 1 && var.platform_fault_domain_count <= 3
+    error_message = "Variable [platform_fault_domain_count] must be in the range 1 - 3."
+  }
+
+  validation {
+    condition     = !(var.orchestration_mode == "Flexible" && var.availability_zones_num != "0") || var.platform_fault_domain_count == 1
+    error_message = "Variable [platform_fault_domain_count] must be 1 when deploying Flexible orchestration across availability zones (availability_zones_num != \"0\")."
+  }
 }

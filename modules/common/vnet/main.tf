@@ -6,6 +6,7 @@ resource "azurerm_virtual_network" "vnet" {
   address_space       = var.enable_ipv6 ? concat([var.address_space], [var.ipv6_address_space]) : [var.address_space]
   resource_group_name = var.resource_group_name
   dns_servers         = var.dns_servers
+  edge_zone           = var.edge_zone
   tags                = merge(lookup(var.tags, "virtual-network", {}), lookup(var.tags, "all", {}))
 }
 
@@ -13,11 +14,12 @@ resource "azurerm_subnet" "subnet" {
   depends_on = [
     azurerm_virtual_network.vnet
   ]
-  count                = local.create_new_vnet ? length(var.subnet_names) : 0
-  name                 = var.subnet_names[count.index]
-  virtual_network_name = azurerm_virtual_network.vnet[0].name
-  resource_group_name  = var.resource_group_name
-  address_prefixes     = var.enable_ipv6 ? [var.subnet_prefixes[count.index], var.subnet_ipv6_prefixes[count.index]] : [var.subnet_prefixes[count.index]]
+  count                           = local.create_new_vnet ? length(var.subnet_names) : 0
+  name                            = var.subnet_names[count.index]
+  virtual_network_name            = azurerm_virtual_network.vnet[0].name
+  resource_group_name             = var.resource_group_name
+  address_prefixes                = var.enable_ipv6 ? [var.subnet_prefixes[count.index], var.subnet_ipv6_prefixes[count.index]] : [var.subnet_prefixes[count.index]]
+  default_outbound_access_enabled = var.edge_zone != null && var.edge_zone != "" && var.edge_zone != "None" ? false : true
 }
 
 resource "azurerm_subnet_network_security_group_association" "security_group_frontend_association" {
@@ -25,7 +27,7 @@ resource "azurerm_subnet_network_security_group_association" "security_group_fro
     azurerm_virtual_network.vnet,
     azurerm_subnet.subnet[0]
   ]
-  count                     = local.create_new_vnet ? 1 : 0
+  count                     = local.create_new_vnet && var.enable_nsg ? 1 : 0
   subnet_id                 = azurerm_subnet.subnet[0].id
   network_security_group_id = var.nsg_id
 }
@@ -35,7 +37,7 @@ resource "azurerm_subnet_network_security_group_association" "security_group_bac
     azurerm_virtual_network.vnet,
     azurerm_subnet.subnet[1]
   ]
-  count                     = local.create_new_vnet ? (length(var.subnet_names) >= 2 ? 1 : 0) : 0
+  count                     = local.create_new_vnet && var.enable_nsg ? (length(var.subnet_names) >= 2 ? 1 : 0) : 0
   subnet_id                 = azurerm_subnet.subnet[1].id
   network_security_group_id = var.nsg_id
 }
@@ -97,7 +99,7 @@ resource "azurerm_route_table" "backend" {
       name                   = "To-Internet"
       address_prefix         = "0.0.0.0/0"
       next_hop_type          = local.next_hop_type_allowed_values[3]
-      next_hop_in_ip_address = cidrhost(azurerm_subnet.subnet[1].address_prefixes[0], 4)
+      next_hop_in_ip_address = cidrhost(azurerm_subnet.subnet[1].address_prefixes[0], var.backend_next_hop_ip_host)
     }
   }
   dynamic "route" {
@@ -117,7 +119,7 @@ resource "azurerm_route_table" "backend" {
       next_hop_in_ip_address = cidrhost(azurerm_subnet.subnet[1].address_prefixes[1], 10)
     }
   }
-  
+
   dynamic "route" {
     for_each = var.enable_ipv6 && var.deployment_type != "single" ? [1] : []
     content {

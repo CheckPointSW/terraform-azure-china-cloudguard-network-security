@@ -1,22 +1,25 @@
 //********************** Basic Configuration Variables **************************//
 variable "subscription_id" {
   description = "Subscription ID"
-  type = string
+  type        = string
 }
 
 variable "tenant_id" {
   description = "Tenant ID"
-  type = string
+  type        = string
 }
 
 variable "client_id" {
-  description = "Application ID(Client ID)"
-  type = string
+  description = "Application ID(Client ID). Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
+  type        = string
+  default     = null
 }
 
 variable "client_secret" {
-  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password."
-  type = string
+  description = "A secret string that the application uses to prove its identity when requesting a token. Also can be referred to as application password. Optional - if omitted, authentication falls back to Azure CLI, Managed Identity, or ARM_* environment variables."
+  type        = string
+  sensitive   = true
+  default     = null
 }
 
 variable "resource_group_name" {
@@ -27,6 +30,11 @@ variable "resource_group_name" {
 variable "mds_name" {
   description = "MDS name."
   type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", var.mds_name))
+    error_message = "Variable [mds_name] must be 1-64 characters, contain only alphanumerics and hyphens, and must not start or end with a hyphen."
+  }
 }
 
 variable "location" {
@@ -47,6 +55,20 @@ variable "source_image_vhd_uri" {
   default     = "noCustomUri"
 }
 
+variable "hyper_v_generation" {
+  description = "The Hyper-V generation of the virtual machine. Set to 'V2' to deploy a Generation 2 VM, or 'V1' for Generation 1. 'V2' is supported on Gaia version R82.10 or later."
+  type        = string
+  default     = "V1"
+  validation {
+    condition     = contains(["V1", "V2"], var.hyper_v_generation)
+    error_message = "Variable [hyper_v_generation] must be one of 'V1', 'V2'."
+  }
+  validation {
+    condition     = var.hyper_v_generation != "V2" || var.source_image_vhd_uri != "noCustomUri" || !contains(["R8110", "R8120", "R82"], var.os_version)
+    error_message = "hyper_v_generation can be set to 'V2' only for a custom image, or for a marketplace image on Gaia version R82.10 or later."
+  }
+}
+
 variable "admin_username" {
   description = "Administrator username of deployed VM. Due to Azure limitations 'notused' name can be used."
   type        = string
@@ -59,8 +81,15 @@ variable "authentication_type" {
 }
 
 variable "admin_password" {
-  description = "Administrator password of deployed Virtual Machine. The password must meet the complexity requirements of Azure."
+  description = "(Optional) Administrator password of the deployed VM. Required when authentication_type is 'Password'."
   type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.authentication_type == "SSH Public Key" || var.admin_password != ""
+    error_message = "admin_password is required when authentication_type is 'Password'."
+  }
 }
 
 variable "admin_SSH_key" {
@@ -72,6 +101,7 @@ variable "admin_SSH_key" {
 variable "sic_key" {
   description = "Secure Internal Communication (SIC) key."
   type        = string
+  sensitive   = true
 
   validation {
     condition     = length(var.sic_key) >= 12
@@ -80,13 +110,17 @@ variable "sic_key" {
 }
 
 variable "serial_console_password_hash" {
-  description = "Optional parameter, used to enable serial console connection in case of SSH key as authentication type."
+  description = "(Optional) Password hash for serial console connection. Relevant when using SSH Public Key authentication."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "maintenance_mode_password_hash" {
-  description = "Maintenance mode password hash, relevant only for R81.20 and higher versions."
+  description = "(Optional) Maintenance mode password hash, relevant only for R81.20 and higher versions."
   type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "installation_type" {
@@ -124,6 +158,12 @@ variable "vm_size" {
 variable "disk_size" {
   description = "Storage data disk size size(GB). Select a number between 100 and 3995."
   type        = string
+  default     = "200"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.disk_size)) && tonumber(var.disk_size) >= 100 && tonumber(var.disk_size) <= 3995
+    error_message = "Variable [disk_size] must be a whole number in the range 100 - 3995 (GB)."
+  }
 }
 
 variable "os_version" {
@@ -137,7 +177,7 @@ variable "vm_os_sku" {
 }
 
 variable "vm_os_offer" {
-  description = "The name of the image offer to be deployed.Choose from: check-point-cg-r8110, check-point-cg-r8120, check-point-cg-r82, check-point-cg-r8210."
+  description = "The name of the image offer to be deployed.Choose from: check-point-cg-r8110, check-point-cg-r8120, check-point-cg-r82, check-point-cg-r8210, check-point-cg-r8220."
   type        = string
 }
 
@@ -194,12 +234,13 @@ variable "subnet_prefix" {
 }
 
 variable "management_GUI_client_network" {
-  description = "Allowed GUI clients - GUI clients network CIDR."
+  description = "Allowed GUI clients - GUI clients network CIDR. Use '0.0.0.0/0' to allow access from any IPv4 address."
   type        = string
+  default     = "0.0.0.0/0"
 
   validation {
-    condition     = can(regex("(^0\\.0\\.0\\.0\\/0$)|(^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/32)?$)", var.management_GUI_client_network)) && var.management_GUI_client_network != "0.0.0.0/32"
-    error_message = "Variable [management_GUI_client_network] must be a valid IPv4 network CIDR."
+    condition     = can(regex("^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(3[0-2]|2[0-9]|1[0-9]|[0-9]))$", var.management_GUI_client_network))
+    error_message = "Variable [management_GUI_client_network] must be a valid IPv4 network CIDR (e.g. '0.0.0.0/0' for any)."
   }
 }
 
@@ -262,7 +303,7 @@ variable "sku" {
 }
 
 variable "security_rules" {
-  description = "Security rules for the Network Security Group using this format [name, priority, direction, access, protocol, source_source_port_rangesport_range, destination_port_ranges, source_address_prefix, destination_address_prefix, description]."
+  description = "Additional security rules for the Network Security Group using this format [name, priority, direction, access, protocol, source_port_ranges, destination_port_ranges, source_address_prefix, destination_address_prefix, description]."
   type        = list(any)
   default     = []
 }

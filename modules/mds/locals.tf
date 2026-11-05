@@ -2,6 +2,15 @@ locals {
   module_name    = "mds_terraform_registry"
   module_version = "1.1.1"
 
+  // Image selection - MDS deploys its dedicated MDS Blink plans (mds-byol-blink / mds-25-blink)
+  // for a primary MDS on every OS version except R81.10, which has no Blink image.
+  // Callers still pass the management SKU (mgmt-byol / mgmt-25) for backward-compat (automation
+  // relies on it); on the Blink path we map "mgmt-" -> "mds-" and append "-blink" / "-gen2".
+  // R81.10 keeps the caller-supplied SKU unchanged.
+  is_gen2   = var.hyper_v_generation == "V2"
+  is_blink  = var.os_version != "R8110" && var.installation_type == "mds-primary"
+  vm_os_sku = "${local.is_blink ? "${replace(var.vm_os_sku, "mgmt-", "mds-")}-blink" : var.vm_os_sku}${local.is_gen2 ? "-gen2" : ""}"
+
   // NSG base security rules
   nsg_base_security_rules = [
     {
@@ -97,6 +106,66 @@ locals {
       source_port_ranges         = "*"
       destination_port_ranges    = "18191"
       description                = "Allow security gateways to fetch policy"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    },
+    {
+      name                       = "SmartViewLogs"
+      priority                   = "180"
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_ranges         = "*"
+      destination_port_ranges    = "8211"
+      description                = "Allow Log Server communication"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    },
+    {
+      name                       = "SecureInternalCommunication"
+      priority                   = "190"
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_ranges         = "*"
+      destination_port_ranges    = "18209"
+      description                = "Allow secured internal communication"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    },
+    {
+      name                       = "AMONApplicationMonitoring"
+      priority                   = "200"
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_ranges         = "*"
+      destination_port_ranges    = "18192"
+      description                = "Allow inbound AMON application monitoring communication"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    },
+    {
+      name                       = "ICA-push"
+      priority                   = "210"
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_ranges         = "*"
+      destination_port_ranges    = "18211"
+      description                = "Allow to accept ICA SIC certificate"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    },
+    {
+      name                       = "MGMTStandBySynchronization"
+      priority                   = "220"
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_ranges         = "*"
+      destination_port_ranges    = "18221"
+      description                = "Allow inbound management HA standby synchronization communication"
       source_address_prefix      = "*"
       destination_address_prefix = "*"
     }

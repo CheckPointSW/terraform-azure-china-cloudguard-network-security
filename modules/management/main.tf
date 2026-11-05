@@ -14,9 +14,9 @@ module "common" {
   allow_upload_download          = var.allow_upload_download
   vm_size                        = var.vm_size
   disk_size                      = var.disk_size
-  is_blink                       = false
+  is_blink                       = local.is_blink
   os_version                     = var.os_version
-  vm_os_sku                      = var.vm_os_sku
+  vm_os_sku                      = local.vm_os_sku
   vm_os_offer                    = var.vm_os_offer
   authentication_type            = var.authentication_type
   serial_console_password_hash   = var.serial_console_password_hash
@@ -102,10 +102,10 @@ resource "azurerm_network_interface" "nic" {
     azurerm_public_ip.public_ip_v6,
     module.vnet
   ]
-  name                 = "${var.mgmt_name}-eth0"
-  location             = module.common.resource_group_location
-  resource_group_name  = module.common.resource_group_name
-  enable_ip_forwarding = false
+  name                  = "${var.mgmt_name}-eth0"
+  location              = module.common.resource_group_location
+  resource_group_name   = module.common.resource_group_name
+  ip_forwarding_enabled = false
 
   ip_configuration {
     name                          = "ipconfig1"
@@ -149,8 +149,10 @@ module "vm_boot_diagnostics_storage" {
 module "custom_image" {
   source               = "../common/custom-image"
   source_image_vhd_uri = var.source_image_vhd_uri
+  hyper_v_generation   = var.hyper_v_generation
   resource_group_name  = module.common.resource_group_name
   location             = module.common.resource_group_location
+  storage_type         = module.common.os_disk_type
   tags                 = merge(lookup(var.tags, "custom-image", {}), lookup(var.tags, "all", {}))
 }
 
@@ -231,9 +233,9 @@ resource "azurerm_virtual_machine" "mgmt_vm_instance" {
     name              = var.mgmt_name
     create_option     = module.common.storage_os_disk_create_option
     caching           = module.common.storage_os_disk_caching
-    managed_disk_type = module.vm_boot_diagnostics_storage.storage_account_type
+    managed_disk_type = module.common.os_disk_type
     disk_size_gb      = module.common.disk_size
   }
 
-  tags = merge(lookup(var.tags, "virtual-machine", {}), lookup(var.tags, "all", {}))
+  tags = merge(lookup(var.tags, "virtual-machine", {}), lookup(var.tags, "all", {}), { LegacyVMNVA = "" })
 }
